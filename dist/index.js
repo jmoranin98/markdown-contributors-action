@@ -183,7 +183,7 @@ const fs = __webpack_require__(747);
       Array.isArray(contributors)
     ) {
       contributors.forEach(contributor => {
-        contributorsStr += `${contributor} ![alt text](https://ui-avatars.com/api/?name=${contributor})\n`;
+        contributorsStr += `- ![alt text](https://ui-avatars.com/api/?size=56&name=${contributor.replace(' ', '+')}) ${contributor}\n`;
       });
     }
 
