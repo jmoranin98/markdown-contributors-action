@@ -173,7 +173,7 @@ const fs = __webpack_require__(747);
     const payload = JSON.stringify(gh.context.payload, undefined, 2);
     console.log(`Event payload: ${payload}`);
 
-    const doc = await fs.readFile(core.getInput('path'));
+    const doc = fs.readFileSync(core.getInput('path'));
     const { contributors } = JSON.parse(doc);
 
     let contributorsStr = '';
@@ -192,7 +192,7 @@ const fs = __webpack_require__(747);
       ${contributorsStr}
     `;
 
-    await fs.writeFile('contributors.md', markdownContent);
+    fs.writeFileSync('contributors.md', markdownContent);
   } catch (error) {
     core.setFailed(error.message);
   }
