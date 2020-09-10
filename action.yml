@@ -1,0 +1,10 @@
+name: 'Contributors action'
+description: 'Create contributors markdown file'
+inputs:
+  path:
+    description: 'Path of contributors file'
+    required: true
+    default: 'contributors.json'
+runs:
+  using: 'node12'
+  main: 'index.js'
