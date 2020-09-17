@@ -89,6 +89,32 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
+/***/ 15:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class Raw extends Liquid.Block {
+  async parse (tokens) {
+    if (tokens.length === 0 || this.ended) {
+      return
+    }
+
+    const token = tokens.shift()
+    const match = Liquid.Block.FullToken.exec(token.value)
+
+    if ((match != null ? match[1] : void 0) === this.blockDelimiter()) {
+      return this.endTag()
+    }
+
+    this.nodelist.push(token.value)
+    return this.parse(tokens)
+  }
+}
+
+
+/***/ }),
+
 /***/ 16:
 /***/ (function(module) {
 
@@ -126,6 +152,144 @@ module.exports = function createError(message, config, code, request, response) 
   var error = new Error(message);
   return enhanceError(error, config, code, request, response);
 };
+
+
+/***/ }),
+
+/***/ 34:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+class Block extends Liquid.Tag {
+  beforeParse () {
+    if (!this.nodelist) {
+      this.nodelist = []
+    }
+    this.nodelist.length = 0
+    return this.nodelist.length
+  }
+
+  afterParse () {
+    return this.assertMissingDelimitation()
+  }
+
+  async parse (tokens) {
+    if (tokens.length === 0 || this.ended) {
+      return
+    }
+
+    const token = tokens.shift()
+
+    try {
+      await this.parseToken(token, tokens)
+    } catch (err) {
+      err.message = err.message + '\n    at ' + token.value + ' (' + token.filename + ':' + token.line + ':' + token.col + ')'
+      if (!err.location) {
+        err.location = {
+          col: token.col,
+          line: token.line,
+          filename: token.filename
+        }
+      }
+      throw err
+    }
+
+    return this.parse(tokens)
+  }
+
+  async parseToken (token, tokens) {
+    if (Block.IsTag.test(token.value)) {
+      const match = Block.FullToken.exec(token.value)
+      if (!match) {
+        throw new Liquid.SyntaxError("Tag '" + token.value + "' was not properly terminated with regexp: " + Liquid.TagEnd.inspect)
+      }
+      if (this.blockDelimiter() === match[1]) {
+        return this.endTag()
+      }
+      const Tag = this.template.tags[match[1]]
+      if (!Tag) {
+        return this.unknownTag(match[1], match[2], tokens)
+      }
+      const tag = new Tag(this.template, match[1], match[2])
+      this.nodelist.push(tag)
+      return tag.parseWithCallbacks(tokens)
+    } else if (Block.IsVariable.test(token.value)) {
+      return this.nodelist.push(this.createVariable(token))
+    } else if (token.value.length !== 0) {
+      return this.nodelist.push(token.value)
+    }
+  }
+
+  endTag () {
+    this.ended = true
+    return this.ended
+  }
+
+  unknownTag (tag, params, tokens) {
+    if (tag === 'else') {
+      throw new Liquid.SyntaxError((this.blockName()) + ' tag does not expect else tag')
+    } else if (tag === 'end') {
+      throw new Liquid.SyntaxError("'end' is not a valid delimiter for " + (this.blockName()) + ' tags. use ' + (this.blockDelimiter()))
+    } else {
+      throw new Liquid.SyntaxError("Unknown tag '" + tag + "'")
+    }
+  }
+
+  blockDelimiter () {
+    return 'end' + (this.blockName())
+  }
+
+  blockName () {
+    return this.tagName
+  }
+
+  createVariable (token) {
+    const ref = Liquid.Block.ContentOfVariable.exec(token.value)
+    const match = ref != null ? ref[1] : void 0
+    if (match) {
+      return new Liquid.Variable(match)
+    }
+    throw new Liquid.SyntaxError("Variable '" + token.value + "' was not properly terminated with regexp: " + Liquid.VariableEnd.inspect)
+  }
+
+  async render (context) {
+    return this.renderAll(this.nodelist, context)
+  }
+
+  assertMissingDelimitation () {
+    if (!this.ended) {
+      throw new Liquid.SyntaxError((this.blockName()) + ' tag was never closed')
+    }
+  }
+
+  async renderAll (list, context) {
+    const accumulator = []
+
+    for (const token of list) {
+      if (token && typeof token.render !== 'function') {
+        accumulator.push(token)
+        continue
+      }
+
+      try {
+        const renderedToken = await token.render(context)
+        accumulator.push(renderedToken)
+      } catch (err) {
+        accumulator.push(context.handleError(err))
+      }
+    }
+
+    return accumulator
+  }
+}
+
+Block.IsTag = RegExp('^' + Liquid.TagStart.source)
+Block.IsVariable = RegExp('^' + Liquid.VariableStart.source)
+Block.FullToken = RegExp('^' + Liquid.TagStart.source + '\\s*(\\w+)\\s*(.*)?' + Liquid.TagEnd.source + '$')
+Block.ContentOfVariable = RegExp('^' + Liquid.VariableStart.source + '(.*)' + Liquid.VariableEnd.source + '$')
+
+module.exports = Block
 
 
 /***/ }),
@@ -545,6 +709,20 @@ module.exports = __webpack_require__(352);
 
 /***/ }),
 
+/***/ 73:
+/***/ (function(module) {
+
+module.exports = async function reduce (collection, reducer, value) {
+  const items = await Promise.all(collection)
+  return items.reduce(async (promise, item, index, length) => {
+    const value = await promise
+    return reducer(value, item, index, length)
+  }, Promise.resolve(value))
+}
+
+
+/***/ }),
+
 /***/ 87:
 /***/ (function(module) {
 
@@ -558,17 +736,20 @@ module.exports = require("os");
 const core = __webpack_require__(470);
 const gh = __webpack_require__(469);
 const axios = __webpack_require__(53);
+const Liquid = __webpack_require__(906)
+const engine = new Liquid.Engine();
 
 const fs = __webpack_require__(747);
 
 (async () => {
   try {
     const doc = fs.readFileSync(core.getInput('path'));
+    const templateDoc = fs.readFileSync(core.getInput('template_path'));
     const outputPath = core.getInput('output_path');
 
     const { contributors } = JSON.parse(doc);
 
-    let contributorsStr = '';
+    const finalContributors = [];
 
     if (
       contributors &&
@@ -576,7 +757,7 @@ const fs = __webpack_require__(747);
     ) {
       for (let contributor of contributors) {
         let imageUrl = '';
-        let contributorName = '';
+        let name = '';
 
         if (typeof contributor === 'object') {
           if (contributor.avatar_url) imageUrl = contributor.avatar_url;
@@ -586,20 +767,24 @@ const fs = __webpack_require__(747);
             imageUrl = avatar_url;
           }
 
-          contributorName = contributor.login;
+          name = contributor.login;
         } else if (typeof contributor === 'string') {
           const { data } = await axios(`https://api.github.com/users/${contributor}`);
           const { avatar_url } = data;
 
           imageUrl = avatar_url;
-          contributorName = contributor;
+          name = contributor;
         } else core.setFailed('Not supported format');
 
-        contributorsStr += `- <img src="${imageUrl}" height='50' width='50' /> ${contributorName}\n`;
+        finalContributors.push({
+          imageUrl,
+          name,
+        });
       }
     }
 
-    const markdownContent = `# Contributors\n${contributorsStr}`;
+    const liquidTemplate = await engine.parse(templateDoc);
+    const markdownContent = await liquidTemplate.render({ contributors: finalContributors });
 
     fs.writeFileSync(outputPath, markdownContent);
   } catch (error) {
@@ -1075,6 +1260,130 @@ exports.debug = debug; // for test
 
 /***/ }),
 
+/***/ 172:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+const PromiseReduce = __webpack_require__(73)
+const Iterable = __webpack_require__(924)
+
+const SyntaxHelp = "Syntax Error in 'for loop' - Valid syntax: for [item] in [collection]"
+const Syntax = RegExp('(\\w+)\\s+in\\s+((?:' + Liquid.QuotedFragment.source + ')+)\\s*(reversed)?')
+
+module.exports = class For extends Liquid.Block {
+  constructor (template, tagName, markup) {
+    super(template, tagName, markup)
+    const match = Syntax.exec(markup)
+    if (!match) {
+      throw new Liquid.SyntaxError(SyntaxHelp)
+    }
+
+    this.variableName = match[1]
+    this.collectionName = match[2]
+    this.registerName = match[1] + '=' + match[2]
+    this.reversed = match[3]
+    this.attributes = {}
+    this.nodelist = this.forBlock = []
+
+    Liquid.Helpers.scan(markup, Liquid.TagAttributes).forEach(attr => {
+      this.attributes[attr[0]] = attr[1]
+    })
+  }
+
+  unknownTag (tag, markup) {
+    if (tag !== 'else') {
+      return super.unknownTag(tag, markup)
+    }
+    this.nodelist = this.elseBlock = []
+    return this.nodelist
+  }
+
+  renderElse (context) {
+    if (this.elseBlock) {
+      return this.renderAll(this.elseBlock, context)
+    } else {
+      return ''
+    }
+  }
+
+  sliceCollection (collection, from, to) {
+    const args = [from]
+    if (to != null) {
+      args.push(to)
+    }
+
+    const ref = Iterable.cast(collection)
+    return ref.slice.apply(ref, args)
+  }
+
+  async render (context) {
+    if (!context.registers.for) context.registers.for = {}
+    let collection = await context.get(this.collectionName)
+
+    if (collection != null ? collection.forEach : void 0) {
+
+    } else if (collection instanceof Object) {
+      const results = []
+
+      for (const key in collection) {
+        if (!Object.prototype.hasOwnProperty.call(collection, key)) {
+          continue
+        }
+
+        const v = collection[key]
+        results.push([key, v])
+      }
+
+      collection = results
+    } else {
+      return this.renderElse(context)
+    }
+
+    const from = this.attributes.offset === 'continue' ? Number(context.registers.for[this.registerName]) || 0 : Number(this.attributes.offset) || 0
+    const limit = this.attributes.limit
+    const to = limit ? Number(limit) + from : null
+
+    const segment = await this.sliceCollection(collection, from, to)
+    if (segment.length === 0) {
+      return this.renderElse(context)
+    }
+
+    if (this.reversed) {
+      segment.reverse()
+    }
+
+    const length = segment.length
+    context.registers.for[this.registerName] = from + segment.length
+    return context.stack(() => {
+      return PromiseReduce(segment, async (output, item, index) => {
+        context.set(this.variableName, item)
+        context.set('forloop', {
+          name: this.registerName,
+          length: length,
+          index: index + 1,
+          index0: index,
+          rindex: length - index,
+          rindex0: length - index - 1,
+          first: index === 0,
+          last: index === length - 1
+        })
+
+        try {
+          const rendered = await this.renderAll(this.forBlock, context)
+          output.push(rendered)
+        } catch (err) {
+          output.push(context.handleError(err))
+        }
+
+        return output
+      }, [])
+    })
+  }
+}
+
+
+/***/ }),
+
 /***/ 211:
 /***/ (function(module) {
 
@@ -1276,6 +1585,124 @@ module.exports = function xhrAdapter(config) {
 
 /***/ }),
 
+/***/ 252:
+/***/ (function(module) {
+
+module.exports = {
+  flatten: array => {
+    const output = []
+    const _flatten = childArray => {
+      return childArray.forEach(item => {
+        if (Array.isArray(item)) {
+          return _flatten(item)
+        } else {
+          return output.push(item)
+        }
+      })
+    }
+    _flatten(array)
+    return output
+  },
+  toFlatString: function (array) {
+    return this.flatten(array).join('')
+  },
+  scan: (string, regexp, globalMatch = false) => {
+    const result = []
+    const _scan = s => {
+      const match = regexp.exec(s)
+      if (!match) return
+      if (match.length === 1) {
+        result.push(match[0])
+      } else {
+        result.push(match.slice(1))
+      }
+
+      const l = globalMatch
+        ? 1
+        : match[0].length
+
+      if (match.index + l < s.length) {
+        return _scan(s.substring(match.index + l))
+      }
+    }
+    _scan(string)
+    return result
+  }
+}
+
+
+/***/ }),
+
+/***/ 255:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class Engine {
+  constructor () {
+    this.tags = {}
+    this.Strainer = function (context) {
+      this.context = context
+    }
+
+    this.registerFilters(Liquid.StandardFilters)
+    this.fileSystem = new Liquid.BlankFileSystem()
+
+    for (const tagName in Liquid) {
+      if (!Object.prototype.hasOwnProperty.call(Liquid, tagName)) continue
+      const tag = Liquid[tagName]
+      if (!(tag.prototype instanceof Liquid.Tag)) {
+        continue
+      }
+      const isBlockOrTagBaseClass = [Liquid.Tag, Liquid.Block].indexOf(tag.constructor) >= 0
+      if (!isBlockOrTagBaseClass) {
+        this.registerTag(tagName.toLowerCase(), tag)
+      }
+    }
+  }
+
+  registerTag (name, tag) {
+    this.tags[name] = tag
+  }
+
+  registerFilters (...filters) {
+    return filters.forEach((filter) => {
+      const results = []
+      for (const key in filter) {
+        if (!Object.prototype.hasOwnProperty.call(filter, key)) continue
+        const value = filter[key]
+        if (value instanceof Function) {
+          results.push(this.Strainer.prototype[key] = value)
+        } else {
+          results.push(void 0)
+        }
+      }
+      return results
+    })
+  }
+
+  async parse (source) {
+    const template = new Liquid.Template()
+    return template.parse(this, source)
+  }
+
+  async parseAndRender (source, context) {
+    const template = await this.parse(source)
+    return template.render(context)
+  }
+
+  registerFileSystem (fileSystem) {
+    if (!(fileSystem instanceof Liquid.BlankFileSystem)) {
+      throw Liquid.ArgumentError('Must be subclass of Liquid.BlankFileSystem')
+    }
+    this.fileSystem = fileSystem
+    return this.fileSystem
+  }
+}
+
+
+/***/ }),
+
 /***/ 262:
 /***/ (function(__unusedmodule, exports, __webpack_require__) {
 
@@ -1428,6 +1855,47 @@ module.exports = InterceptorManager;
 
 /***/ }),
 
+/***/ 290:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+const Syntax = /((?:{{2}\s?)?[a-z0-9/\\_.-]+(?:\s?}{2})?)/i
+const SyntaxHelp = "Syntax Error in 'include' - Valid syntax: include [templateName]"
+
+module.exports = class Include extends Liquid.Tag {
+  constructor (template, tagName, markup) {
+    super(template, tagName, markup)
+
+    const match = Syntax.exec(markup)
+    if (!match) {
+      throw new Liquid.SyntaxError(SyntaxHelp)
+    }
+
+    this.filepath = match[1]
+  }
+
+  async subTemplate (context) {
+    if (this.filepath.startsWith('{{') && this.filepath.endsWith('}}')) {
+      this.filepath = await context.get(this.filepath)
+    }
+
+    const src = await this.template
+      .engine
+      .fileSystem
+      .readTemplateFile(this.filepath)
+    return this.template.engine.parse(src)
+  }
+
+  async render (context) {
+    const subTemplate = await this.subTemplate(context)
+    return subTemplate.render(context)
+  }
+}
+
+
+/***/ }),
+
 /***/ 299:
 /***/ (function(__unusedmodule, exports) {
 
@@ -1562,6 +2030,27 @@ paginateRest.VERSION = VERSION;
 
 exports.paginateRest = paginateRest;
 //# sourceMappingURL=index.js.map
+
+
+/***/ }),
+
+/***/ 322:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class Document extends Liquid.Block {
+  constructor (template) {
+    super()
+    this.template = template
+  }
+
+  blockDelimiter () {
+    return []
+  }
+
+  assertMissingDelimitation () {}
+}
 
 
 /***/ }),
@@ -1794,6 +2283,137 @@ module.exports = function enhanceError(error, config, code, request, response) {
   };
   return error;
 };
+
+
+/***/ }),
+
+/***/ 370:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+const LITERALS = {
+  empty: v => !((v != null ? v.length : void 0) > 0),
+  blank: v => !v || v.toString().length === 0
+}
+
+const operators = {
+  '==': (cond, left, right) => cond.equalVariables(left, right),
+  'is': (cond, left, right) => cond.equalVariables(left, right),
+  '!=': (cond, left, right) => !cond.equalVariables(left, right),
+  '<>': (cond, left, right) => !cond.equalVariables(left, right),
+  'isnt': (cond, left, right) => !cond.equalVariables(left, right),
+  '<': (cond, left, right) => left < right,
+  '>': (cond, left, right) => left > right,
+  '<=': (cond, left, right) => left <= right,
+  '>=': (cond, left, right) => left >= right,
+  'contains': (cond, left, right) => {
+    if (left == null) return
+    if (typeof left.indexOf === 'function') return left.indexOf(right) >= 0
+  }
+}
+
+class Condition {
+  constructor (left, operator, right) {
+    this.left = left
+    this.operator = operator
+    this.right = right
+    this.childRelation = null
+    this.childCondition = null
+  }
+
+  async evaluate (context = new Liquid.Context()) {
+    const result = await this.interpretCondition(this.left, this.right, this.operator, context)
+    switch (this.childRelation) {
+      case 'or':
+        return result || this.childCondition.evaluate(context)
+      case 'and':
+        return result && this.childCondition.evaluate(context)
+      default:
+        return result
+    }
+  }
+
+  or (childCondition) {
+    this.childCondition = childCondition
+    this.childRelation = 'or'
+    return this.childRelation
+  }
+
+  and (childCondition) {
+    this.childCondition = childCondition
+    this.childRelation = 'and'
+    return this.childRelation
+  }
+
+  attach (attachment) {
+    this.attachment = attachment
+    return this.attachment
+  }
+
+  equalVariables (left, right) {
+    if (typeof left === 'function') {
+      return left(right)
+    } else if (typeof right === 'function') {
+      return right(left)
+    } else {
+      return left === right
+    }
+  }
+
+  async resolveVariable (key, context) {
+    if (key in LITERALS) {
+      return LITERALS[key]
+    } else {
+      return context.get(key)
+    }
+  }
+
+  async interpretCondition (left, right, op, context) {
+    if (!op) {
+      return this.resolveVariable(left, context)
+    }
+
+    const operation = Condition.operators[op]
+    if (!operation) {
+      throw new Error('Unknown operator ' + op)
+    }
+
+    const [resolvedLeft, resolvedRight] = await Promise.all([
+      this.resolveVariable(left, context),
+      this.resolveVariable(right, context)
+    ])
+
+    return operation(this, resolvedLeft, resolvedRight)
+  }
+}
+
+Condition.operators = operators
+
+module.exports = Condition
+
+
+/***/ }),
+
+/***/ 376:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class Increment extends Liquid.Tag {
+  constructor (template, tagName, markup) {
+    super(template, tagName, markup)
+    this.variable = markup.trim()
+  }
+
+  render (context) {
+    const base = context.environments[0]
+    if (!base[this.variable]) base[this.variable] = 0
+    const value = base[this.variable]
+    context.environments[0][this.variable] = value + 1
+    return value.toString()
+  }
+}
 
 
 /***/ }),
@@ -2183,6 +2803,29 @@ exports.endpoint = endpoint;
 
 /***/ }),
 
+/***/ 409:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class Decrement extends Liquid.Tag {
+  constructor (template, tagName, markup) {
+    super(template, tagName, markup)
+    this.variable = markup.trim()
+  }
+
+  render (context) {
+    const base = context.environments[0]
+    if (!base[this.variable]) base[this.variable] = 0
+    const value = base[this.variable] - 1
+    context.environments[0][this.variable] = value
+    return value.toString()
+  }
+}
+
+
+/***/ }),
+
 /***/ 411:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -2307,6 +2950,642 @@ function escapeProperty(s) {
         .replace(/,/g, '%2C');
 }
 //# sourceMappingURL=command.js.map
+
+/***/ }),
+
+/***/ 447:
+/***/ (function(module) {
+
+//
+// strftime
+// github.com/samsonjs/strftime
+// @_sjs
+//
+// Copyright 2010 - 2015 Sami Samhuri <sami@samhuri.net>
+//
+// MIT License
+// http://sjs.mit-license.org
+//
+
+;(function() {
+
+    var DefaultLocale = {
+            days: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+            shortDays: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'],
+            months: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'],
+            shortMonths: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+            AM: 'AM',
+            PM: 'PM',
+            am: 'am',
+            pm: 'pm',
+            formats: {
+                D: '%m/%d/%y',
+                F: '%Y-%m-%d',
+                R: '%H:%M',
+                T: '%H:%M:%S',
+                X: '%T',
+                c: '%a %b %d %X %Y',
+                r: '%I:%M:%S %p',
+                v: '%e-%b-%Y',
+                x: '%D'
+            }
+        },
+        defaultStrftime = new Strftime(DefaultLocale, 0, false),
+        isCommonJS = "object" !== 'undefined',
+        namespace;
+
+    // CommonJS / Node module
+    if (isCommonJS) {
+        namespace = module.exports = adaptedStrftime;
+        namespace.strftime = deprecatedStrftime;
+    }
+    // Browsers and other environments
+    else {
+        // Get the global object. Works in ES3, ES5, and ES5 strict mode.
+        namespace = (function() { return this || (1,eval)('this'); }());
+        namespace.strftime = adaptedStrftime;
+    }
+
+    // Deprecated API, to be removed in v1.0
+    var _require = isCommonJS ? "require('strftime')" : "strftime";
+    var _deprecationWarnings = {};
+    function deprecationWarning(name, instead) {
+        if (!_deprecationWarnings[name]) {
+            if (typeof console !== 'undefined' && typeof console.warn == 'function') {
+                console.warn("[WARNING] " + name + " is deprecated and will be removed in version 1.0. Instead, use `" + instead + "`.");
+            }
+            _deprecationWarnings[name] = true;
+        }
+    }
+
+    namespace.strftimeTZ = deprecatedStrftimeTZ;
+    namespace.strftimeUTC = deprecatedStrftimeUTC;
+    namespace.localizedStrftime = deprecatedStrftimeLocalized;
+
+    // Adapt the old API while preserving the new API.
+    function adaptForwards(fn) {
+        fn.localize = defaultStrftime.localize.bind(defaultStrftime);
+        fn.timezone = defaultStrftime.timezone.bind(defaultStrftime);
+        fn.utc = defaultStrftime.utc.bind(defaultStrftime);
+    }
+
+    adaptForwards(adaptedStrftime);
+    function adaptedStrftime(fmt, d, locale) {
+        // d and locale are optional, check if this is (format, locale)
+        if (d && d.days) {
+            locale = d;
+            d = undefined;
+        }
+        if (locale) {
+            deprecationWarning("`" + _require + "(format, [date], [locale])`", "var s = " + _require + ".localize(locale); s(format, [date])");
+        }
+        var strftime = locale ? defaultStrftime.localize(locale) : defaultStrftime;
+        return strftime(fmt, d);
+    }
+
+    adaptForwards(deprecatedStrftime);
+    function deprecatedStrftime(fmt, d, locale) {
+        if (locale) {
+            deprecationWarning("`" + _require + ".strftime(format, [date], [locale])`", "var s = " + _require + ".localize(locale); s(format, [date])");
+        }
+        else {
+            deprecationWarning("`" + _require + ".strftime(format, [date])`", _require + "(format, [date])");
+        }
+        var strftime = locale ? defaultStrftime.localize(locale) : defaultStrftime;
+        return strftime(fmt, d);
+    }
+
+    function deprecatedStrftimeTZ(fmt, d, locale, timezone) {
+        // locale is optional, check if this is (format, date, timezone)
+        if ((typeof locale == 'number' || typeof locale == 'string') && timezone == null) {
+            timezone = locale;
+            locale = undefined;
+        }
+
+        if (locale) {
+            deprecationWarning("`" + _require + ".strftimeTZ(format, date, locale, tz)`", "var s = " + _require + ".localize(locale).timezone(tz); s(format, [date])` or `var s = " + _require + ".localize(locale); s.timezone(tz)(format, [date])");
+        }
+        else {
+            deprecationWarning("`" + _require + ".strftimeTZ(format, date, tz)`", "var s = " + _require + ".timezone(tz); s(format, [date])` or `" + _require + ".timezone(tz)(format, [date])");
+        }
+
+        var strftime = (locale ? defaultStrftime.localize(locale) : defaultStrftime).timezone(timezone);
+        return strftime(fmt, d);
+    }
+
+    var utcStrftime = defaultStrftime.utc();
+    function deprecatedStrftimeUTC(fmt, d, locale) {
+        if (locale) {
+            deprecationWarning("`" + _require + ".strftimeUTC(format, date, locale)`", "var s = " + _require + ".localize(locale).utc(); s(format, [date])");
+        }
+        else {
+            deprecationWarning("`" + _require + ".strftimeUTC(format, [date])`", "var s = " + _require + ".utc(); s(format, [date])");
+        }
+        var strftime = locale ? utcStrftime.localize(locale) : utcStrftime;
+        return strftime(fmt, d);
+    }
+
+    function deprecatedStrftimeLocalized(locale) {
+        deprecationWarning("`" + _require + ".localizedStrftime(locale)`", _require + ".localize(locale)");
+        return defaultStrftime.localize(locale);
+    }
+    // End of deprecated API
+
+    // Polyfill Date.now for old browsers.
+    if (typeof Date.now !== 'function') {
+        Date.now = function() {
+          return +new Date();
+        };
+    }
+
+    function Strftime(locale, customTimezoneOffset, useUtcTimezone) {
+        var _locale = locale || DefaultLocale,
+            _customTimezoneOffset = customTimezoneOffset || 0,
+            _useUtcBasedDate = useUtcTimezone || false,
+
+            // we store unix timestamp value here to not create new Date() each iteration (each millisecond)
+            // Date.now() is 2 times faster than new Date()
+            // while millisecond precise is enough here
+            // this could be very helpful when strftime triggered a lot of times one by one
+            _cachedDateTimestamp = 0,
+            _cachedDate;
+
+        function _strftime(format, date) {
+            var timestamp;
+
+            if (!date) {
+                var currentTimestamp = Date.now();
+                if (currentTimestamp > _cachedDateTimestamp) {
+                    _cachedDateTimestamp = currentTimestamp;
+                    _cachedDate = new Date(_cachedDateTimestamp);
+
+                    timestamp = _cachedDateTimestamp;
+
+                    if (_useUtcBasedDate) {
+                        // how to avoid duplication of date instantiation for utc here?
+                        // we tied to getTimezoneOffset of the current date
+                        _cachedDate = new Date(_cachedDateTimestamp + getTimestampToUtcOffsetFor(_cachedDate) + _customTimezoneOffset);
+                    }
+                }
+                else {
+                  timestamp = _cachedDateTimestamp;
+                }
+                date = _cachedDate;
+            }
+            else {
+                timestamp = date.getTime();
+
+                if (_useUtcBasedDate) {
+                    date = new Date(date.getTime() + getTimestampToUtcOffsetFor(date) + _customTimezoneOffset);
+                }
+            }
+
+            return _processFormat(format, date, _locale, timestamp);
+        }
+
+        function _processFormat(format, date, locale, timestamp) {
+            var resultString = '',
+                padding = null,
+                isInScope = false,
+                length = format.length,
+                extendedTZ = false;
+
+            for (var i = 0; i < length; i++) {
+
+                var currentCharCode = format.charCodeAt(i);
+
+                if (isInScope === true) {
+                    // '-'
+                    if (currentCharCode === 45) {
+                        padding = '';
+                        continue;
+                    }
+                    // '_'
+                    else if (currentCharCode === 95) {
+                        padding = ' ';
+                        continue;
+                    }
+                    // '0'
+                    else if (currentCharCode === 48) {
+                        padding = '0';
+                        continue;
+                    }
+                    // ':'
+                    else if (currentCharCode === 58) {
+                      if (extendedTZ) {
+                        if (typeof console !== 'undefined' && typeof console.warn == 'function') {
+                          console.warn("[WARNING] detected use of unsupported %:: or %::: modifiers to strftime");
+                        }
+                      }
+                      extendedTZ = true;
+                      continue;
+                    }
+
+                    switch (currentCharCode) {
+
+                        // Examples for new Date(0) in GMT
+
+                        // 'Thursday'
+                        // case 'A':
+                        case 65:
+                            resultString += locale.days[date.getDay()];
+                            break;
+
+                        // 'January'
+                        // case 'B':
+                        case 66:
+                            resultString += locale.months[date.getMonth()];
+                            break;
+
+                        // '19'
+                        // case 'C':
+                        case 67:
+                            resultString += padTill2(Math.floor(date.getFullYear() / 100), padding);
+                            break;
+
+                        // '01/01/70'
+                        // case 'D':
+                        case 68:
+                            resultString += _processFormat(locale.formats.D, date, locale, timestamp);
+                            break;
+
+                        // '1970-01-01'
+                        // case 'F':
+                        case 70:
+                            resultString += _processFormat(locale.formats.F, date, locale, timestamp);
+                            break;
+
+                        // '00'
+                        // case 'H':
+                        case 72:
+                            resultString += padTill2(date.getHours(), padding);
+                            break;
+
+                        // '12'
+                        // case 'I':
+                        case 73:
+                            resultString += padTill2(hours12(date.getHours()), padding);
+                            break;
+
+                        // '000'
+                        // case 'L':
+                        case 76:
+                            resultString += padTill3(Math.floor(timestamp % 1000));
+                            break;
+
+                        // '00'
+                        // case 'M':
+                        case 77:
+                            resultString += padTill2(date.getMinutes(), padding);
+                            break;
+
+                        // 'am'
+                        // case 'P':
+                        case 80:
+                            resultString += date.getHours() < 12 ? locale.am : locale.pm;
+                            break;
+
+                        // '00:00'
+                        // case 'R':
+                        case 82:
+                            resultString += _processFormat(locale.formats.R, date, locale, timestamp);
+                            break;
+
+                        // '00'
+                        // case 'S':
+                        case 83:
+                            resultString += padTill2(date.getSeconds(), padding);
+                            break;
+
+                        // '00:00:00'
+                        // case 'T':
+                        case 84:
+                            resultString += _processFormat(locale.formats.T, date, locale, timestamp);
+                            break;
+
+                        // '00'
+                        // case 'U':
+                        case 85:
+                            resultString += padTill2(weekNumber(date, 'sunday'), padding);
+                            break;
+
+                        // '00'
+                        // case 'W':
+                        case 87:
+                            resultString += padTill2(weekNumber(date, 'monday'), padding);
+                            break;
+
+                        // '16:00:00'
+                        // case 'X':
+                        case 88:
+                            resultString += _processFormat(locale.formats.X, date, locale, timestamp);
+                            break;
+
+                        // '1970'
+                        // case 'Y':
+                        case 89:
+                            resultString += date.getFullYear();
+                            break;
+
+                        // 'GMT'
+                        // case 'Z':
+                        case 90:
+                            if (_useUtcBasedDate && _customTimezoneOffset === 0) {
+                                resultString += "GMT";
+                            }
+                            else {
+                                // fixme optimize
+                                var tzString = date.toString().match(/\(([\w\s]+)\)/);
+                                resultString += tzString && tzString[1] || '';
+                            }
+                            break;
+
+                        // 'Thu'
+                        // case 'a':
+                        case 97:
+                            resultString += locale.shortDays[date.getDay()];
+                            break;
+
+                        // 'Jan'
+                        // case 'b':
+                        case 98:
+                            resultString += locale.shortMonths[date.getMonth()];
+                            break;
+
+                        // ''
+                        // case 'c':
+                        case 99:
+                            resultString += _processFormat(locale.formats.c, date, locale, timestamp);
+                            break;
+
+                        // '01'
+                        // case 'd':
+                        case 100:
+                            resultString += padTill2(date.getDate(), padding);
+                            break;
+
+                        // ' 1'
+                        // case 'e':
+                        case 101:
+                            resultString += padTill2(date.getDate(), padding == null ? ' ' : padding);
+                            break;
+
+                        // 'Jan'
+                        // case 'h':
+                        case 104:
+                            resultString += locale.shortMonths[date.getMonth()];
+                            break;
+
+                        // '000'
+                        // case 'j':
+                        case 106:
+                            var y = new Date(date.getFullYear(), 0, 1);
+                            var day = Math.ceil((date.getTime() - y.getTime()) / (1000 * 60 * 60 * 24));
+                            resultString += padTill3(day);
+                            break;
+
+                        // ' 0'
+                        // case 'k':
+                        case 107:
+                            resultString += padTill2(date.getHours(), padding == null ? ' ' : padding);
+                            break;
+
+                        // '12'
+                        // case 'l':
+                        case 108:
+                            resultString += padTill2(hours12(date.getHours()), padding == null ? ' ' : padding);
+                            break;
+
+                        // '01'
+                        // case 'm':
+                        case 109:
+                            resultString += padTill2(date.getMonth() + 1, padding);
+                            break;
+
+                        // '\n'
+                        // case 'n':
+                        case 110:
+                            resultString += '\n';
+                            break;
+
+                        // '1st'
+                        // case 'o':
+                        case 111:
+                            resultString += String(date.getDate()) + ordinal(date.getDate());
+                            break;
+
+                        // 'AM'
+                        // case 'p':
+                        case 112:
+                            resultString += date.getHours() < 12 ? locale.AM : locale.PM;
+                            break;
+
+                        // '12:00:00 AM'
+                        // case 'r':
+                        case 114:
+                            resultString += _processFormat(locale.formats.r, date, locale, timestamp);
+                            break;
+
+                        // '0'
+                        // case 's':
+                        case 115:
+                            resultString += Math.floor(timestamp / 1000);
+                            break;
+
+                        // '\t'
+                        // case 't':
+                        case 116:
+                            resultString += '\t';
+                            break;
+
+                        // '4'
+                        // case 'u':
+                        case 117:
+                            var day = date.getDay();
+                            resultString += day === 0 ? 7 : day;
+                            break; // 1 - 7, Monday is first day of the week
+
+                        // ' 1-Jan-1970'
+                        // case 'v':
+                        case 118:
+                            resultString += _processFormat(locale.formats.v, date, locale, timestamp);
+                            break;
+
+                        // '4'
+                        // case 'w':
+                        case 119:
+                            resultString += date.getDay();
+                            break; // 0 - 6, Sunday is first day of the week
+
+                        // '12/31/69'
+                        // case 'x':
+                        case 120:
+                            resultString += _processFormat(locale.formats.x, date, locale, timestamp);
+                            break;
+
+                        // '70'
+                        // case 'y':
+                        case 121:
+                            resultString += ('' + date.getFullYear()).slice(2);
+                            break;
+
+                        // '+0000'
+                        // case 'z':
+                        case 122:
+                            if (_useUtcBasedDate && _customTimezoneOffset === 0) {
+                                resultString += extendedTZ ? "+00:00" : "+0000";
+                            }
+                            else {
+                                var off;
+                                if (_customTimezoneOffset !== 0) {
+                                    off = _customTimezoneOffset / (60 * 1000);
+                                }
+                                else {
+                                    off = -date.getTimezoneOffset();
+                                }
+                                var sign = off < 0 ? '-' : '+';
+                                var sep = extendedTZ ? ':' : '';
+                                var hours = Math.floor(Math.abs(off / 60));
+                                var mins = Math.abs(off % 60);
+                                resultString += sign + padTill2(hours) + sep + padTill2(mins);
+                            }
+                            break;
+
+                        default:
+                            resultString += format[i];
+                            break;
+                    }
+
+                    padding = null;
+                    isInScope = false;
+                    continue;
+                }
+
+                // '%'
+                if (currentCharCode === 37) {
+                    isInScope = true;
+                    continue;
+                }
+
+                resultString += format[i];
+            }
+
+            return resultString;
+        }
+
+        var strftime = _strftime;
+
+        strftime.localize = function(locale) {
+            return new Strftime(locale || _locale, _customTimezoneOffset, _useUtcBasedDate);
+        };
+
+        strftime.timezone = function(timezone) {
+            var customTimezoneOffset = _customTimezoneOffset;
+            var useUtcBasedDate = _useUtcBasedDate;
+
+            var timezoneType = typeof timezone;
+            if (timezoneType === 'number' || timezoneType === 'string') {
+                useUtcBasedDate = true;
+
+                // ISO 8601 format timezone string, [-+]HHMM
+                if (timezoneType === 'string') {
+                    var sign = timezone[0] === '-' ? -1 : 1,
+                        hours = parseInt(timezone.slice(1, 3), 10),
+                        minutes = parseInt(timezone.slice(3, 5), 10);
+
+                    customTimezoneOffset = sign * ((60 * hours) + minutes) * 60 * 1000;
+                    // in minutes: 420
+                }
+                else if (timezoneType === 'number') {
+                    customTimezoneOffset = timezone * 60 * 1000;
+                }
+            }
+
+            return new Strftime(_locale, customTimezoneOffset, useUtcBasedDate);
+        };
+
+        strftime.utc = function() {
+            return new Strftime(_locale, _customTimezoneOffset, true);
+        };
+
+        return strftime;
+    }
+
+    function padTill2(numberToPad, paddingChar) {
+        if (paddingChar === '' || numberToPad > 9) {
+            return numberToPad;
+        }
+        if (paddingChar == null) {
+            paddingChar = '0';
+        }
+        return paddingChar + numberToPad;
+    }
+
+    function padTill3(numberToPad) {
+        if (numberToPad > 99) {
+            return numberToPad;
+        }
+        if (numberToPad > 9) {
+            return '0' + numberToPad;
+        }
+        return '00' + numberToPad;
+    }
+
+    function hours12(hour) {
+        if (hour === 0) {
+            return 12;
+        }
+        else if (hour > 12) {
+            return hour - 12;
+        }
+        return hour;
+    }
+
+    // firstWeekday: 'sunday' or 'monday', default is 'sunday'
+    //
+    // Pilfered & ported from Ruby's strftime implementation.
+    function weekNumber(date, firstWeekday) {
+        firstWeekday = firstWeekday || 'sunday';
+
+        // This works by shifting the weekday back by one day if we
+        // are treating Monday as the first day of the week.
+        var weekday = date.getDay();
+        if (firstWeekday === 'monday') {
+            if (weekday === 0) // Sunday
+                weekday = 6;
+            else
+                weekday--;
+        }
+
+        var firstDayOfYearUtc = Date.UTC(date.getFullYear(), 0, 1),
+            dateUtc = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()),
+            yday = Math.floor((dateUtc - firstDayOfYearUtc) / 86400000),
+            weekNum = (yday + 7 - weekday) / 7;
+
+        return Math.floor(weekNum);
+    }
+
+    // Get the ordinal suffix for a number: st, nd, rd, or th
+    function ordinal(number) {
+        var i = number % 10;
+        var ii = number % 100;
+
+        if ((ii >= 11 && ii <= 13) || i === 0 || i >= 4) {
+            return 'th';
+        }
+        switch (i) {
+            case 1: return 'st';
+            case 2: return 'nd';
+            case 3: return 'rd';
+        }
+    }
+
+    function getTimestampToUtcOffsetFor(date) {
+        return (date.getTimezoneOffset() || 0) * 60000;
+    }
+
+}());
+
 
 /***/ }),
 
@@ -2490,6 +3769,313 @@ Octokit.plugins = [];
 
 exports.Octokit = Octokit;
 //# sourceMappingURL=index.js.map
+
+
+/***/ }),
+
+/***/ 449:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+const squareBracketed = /^\[(.*)\]$/
+
+class Context {
+  constructor (
+    engine,
+    environments = {},
+    outerScope = {},
+    registers = {},
+    rethrowErrors = false
+  ) {
+    this.environments = Liquid.Helpers.flatten([environments])
+    this.scopes = [outerScope]
+    this.registers = registers
+    this.errors = []
+    this.rethrowErrors = rethrowErrors
+    this.strainer = engine ? new engine.Strainer(this) : {}
+    this.squashInstanceAssignsWithEnvironments()
+  }
+
+  registerFilters (...filters) {
+    for (const filter of filters) {
+      for (const key in filter) {
+        if (!Object.prototype.hasOwnProperty.call(filter, key)) continue
+        const value = filter[key]
+        if (value instanceof Function) {
+          this.strainer[key] = value
+        }
+      }
+    }
+  }
+
+  handleError (e) {
+    this.errors.push(e)
+    if (this.rethrowErrors) {
+      throw e
+    }
+    if (e instanceof Liquid.SyntaxError) {
+      return 'Liquid syntax error: ' + e.message
+    } else {
+      return 'Liquid error: ' + e.message
+    }
+  }
+
+  invoke (methodName, ...args) {
+    const method = this.strainer[methodName]
+    if (method instanceof Function) {
+      return method.apply(this.strainer, args)
+    } else {
+      const available = Object.keys(this.strainer)
+      throw new Liquid.FilterNotFound('Unknown filter `' + methodName + '`, available: [' + (available.join(', ')) + ']')
+    }
+  }
+
+  push (newScope = {}) {
+    this.scopes.unshift(newScope)
+    if (this.scopes.length > 100) {
+      throw new Error('Nesting too deep')
+    }
+  }
+
+  merge (newScope = {}) {
+    const results = []
+    for (const key in newScope) {
+      if (!Object.prototype.hasOwnProperty.call(newScope, key)) continue
+      const v = newScope[key]
+      results.push(this.scopes[0][key] = v)
+    }
+    return results
+  }
+
+  pop () {
+    if (this.scopes.length <= 1) {
+      throw new Error('ContextError')
+    }
+    return this.scopes.shift()
+  }
+
+  lastScope () {
+    return this.scopes[this.scopes.length - 1]
+  }
+
+  stack (newScope = {}, f) {
+    let popLater = false
+    try {
+      if (arguments.length < 2) {
+        f = newScope
+        newScope = {}
+      }
+
+      this.push(newScope)
+
+      const result = f()
+      if (result && result.nodeify) {
+        popLater = true
+        result.nodeify(() => this.pop())
+      }
+      return result
+    } finally {
+      if (!popLater) {
+        this.pop()
+      }
+    }
+  }
+
+  clearInstanceAssigns () {
+    this.scopes[0] = {}
+  }
+
+  set (key, value) {
+    this.scopes[0][key] = value
+  }
+
+  async get (key) {
+    return this.resolve(key)
+  }
+
+  async hasKey (key) {
+    const value = await this.resolve(key)
+    return value != null
+  }
+
+  async resolve (key) {
+    let match
+    if (Liquid.Context.Literals.hasOwnProperty(key)) {
+      return Liquid.Context.Literals[key]
+    } else if (match = /^'(.*)'$/.exec(key)) { // eslint-disable-line
+      return match[1]
+    } else if (match = /^"(.*)"$/.exec(key)) { // eslint-disable-line
+      return match[1]
+    } else if (match = /^(\d+)$/.exec(key)) { // eslint-disable-line
+      return Number(match[1])
+    } else if (match = /^\((\S+)\.\.(\S+)\)$/.exec(key)) { // eslint-disable-line
+      const loHi = [match[1], match[2]]
+      const [loArg, hiArg] = await Promise.all(loHi.map(async arg => {
+        const value = await this.resolve(arg)
+        return Number(value)
+      }))
+
+      if (isNaN(loArg) || isNaN(hiArg)) {
+        return []
+      }
+
+      return new Liquid.Range(loArg, hiArg + 1)
+    } else if (match = /^(\d[\d.]+)$/.exec(key)) { // eslint-disable-line
+      return Number(match[1])
+    } else {
+      return this.variable(key)
+    }
+  }
+
+  async findVariable (key) {
+    let variableScope = this.scopes.find((scope) => {
+      return Object.prototype.hasOwnProperty.call(scope, key)
+    })
+
+    let variable
+    if (variableScope == null) {
+      this.environments.some(env => {
+        variable = this.lookupAndEvaluate(env, key)
+        if (variable != null) {
+          variableScope = env
+          return variableScope
+        }
+      })
+    }
+
+    if (variableScope == null) {
+      if (this.environments.length > 0) {
+        variableScope = this.environments[this.environments.length - 1]
+      } else if (this.scopes.length > 0) {
+        variableScope = this.scopes[this.scopes.length - 1]
+      } else {
+        throw new Error('No scopes to find variable in.')
+      }
+    }
+
+    if (variable == null) {
+      variable = this.lookupAndEvaluate(variableScope, key)
+    }
+
+    return this.liquify(variable)
+  }
+
+  async mapper (part, object) {
+    if (object == null) {
+      return object
+    }
+
+    object = await this.liquify(object)
+    if (object == null) {
+      return object
+    }
+
+    const bracketMatch = squareBracketed.exec(part)
+    if (bracketMatch) {
+      part = await this.resolve(bracketMatch[1])
+    }
+
+    const isArrayAccess = Array.isArray(object) && isFinite(part)
+    const isObjectAccess = object instanceof Object && ((typeof object.hasKey === 'function' ? object.hasKey(part) : void 0) || part in object)
+    const isSpecialAccess = !bracketMatch && object && (Array.isArray(object) || Object.prototype.toString.call(object) === '[object String]') && ['size', 'first', 'last'].indexOf(part) >= 0
+
+    if (isArrayAccess || isObjectAccess) {
+      const evaluated = await this.lookupAndEvaluate(object, part)
+      return this.liquify(evaluated)
+    } else if (isSpecialAccess) {
+      switch (part) {
+        case 'size':
+          return this.liquify(object.length)
+        case 'first':
+          return this.liquify(object[0])
+        case 'last':
+          return this.liquify(object[object.length - 1])
+        default:
+
+          /* @covignore */
+          throw new Error('Unknown special accessor: ' + part)
+      }
+    }
+  }
+
+  async variable (markup) {
+    const parts = Liquid.Helpers.scan(markup, Liquid.VariableParser)
+    let firstPart = parts.shift()
+
+    const match = squareBracketed.exec(firstPart)
+    if (match) {
+      firstPart = match[1]
+    }
+
+    const object = await this.findVariable(firstPart)
+    if (parts.length === 0) {
+      return object
+    }
+
+    const iterator = async (object, index) => {
+      if (index < parts.length) {
+        const o = await this.mapper(parts[index], object)
+        return iterator(o, index + 1)
+      } else {
+        return object
+      }
+    }
+
+    try {
+      return iterator(object, 0)
+    } catch (err) {
+      throw new Error("Couldn't walk variable: " + markup + ': ' + err)
+    }
+  }
+
+  lookupAndEvaluate (obj, key) {
+    if (obj instanceof Liquid.Drop) {
+      return obj.get(key)
+    } else {
+      return obj != null ? obj[key] : void 0
+    }
+  }
+
+  squashInstanceAssignsWithEnvironments () {
+    const lastScope = this.lastScope()
+    return Object.keys(lastScope).forEach(key => {
+      return this.environments.some(env => {
+        if (env.hasOwnProperty(key)) {
+          lastScope[key] = this.lookupAndEvaluate(env, key)
+          return true
+        }
+      })
+    })
+  }
+
+  async liquify (object) {
+    if (object == null) {
+      return object
+    } else if (typeof object.toLiquid === 'function') {
+      object = object.toLiquid()
+    } else if (typeof object === 'object') {
+      true // eslint-disable-line
+    } else if (typeof object === 'function') {
+      object = ''
+    } else {
+      Object.prototype.toString.call(object)
+    }
+    if (object instanceof Liquid.Drop) {
+      object.context = this
+    }
+    return object
+  }
+}
+
+Context.Literals = {
+  'null': null,
+  'nil': null,
+  '': null,
+  'true': true,
+  'false': false
+}
+
+module.exports = Context
 
 
 /***/ }),
@@ -4486,6 +6072,117 @@ exports.getState = getState;
 
 /***/ }),
 
+/***/ 478:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class Template {
+  constructor () {
+    this.registers = {}
+    this.assigns = {}
+    this.instanceAssigns = {}
+    this.tags = {}
+    this.errors = []
+    this.rethrowErrors = true
+  }
+
+  async parse (engine, source = '') {
+    this.engine = engine
+
+    // whitespace control
+    //
+    // In Liquid, you can include a hyphen in your tag syntax {{-, -}}, {%-, and -%}
+    // to strip whitespace from the left or right side of a rendered tag.
+    // https://shopify.github.io/liquid/basics/whitespace/
+    source = source
+      .replace(/\n.*?(\{%)-/g, '$1') // tag starting with {%-
+      .replace(/-(%\}).*?\n/g, '$1') // tag ending with -%}
+      .replace(/\n.*?(\{\{)-/g, '$1') // tag starting with {{-
+      .replace(/-(}\}).*?\n/g, '$1') // tag ending with -}}
+
+    const tokens = this._tokenize(source)
+    this.tags = this.engine.tags
+    this.root = new Liquid.Document(this)
+    await this.root.parseWithCallbacks(tokens)
+    return this
+  }
+
+  async render (assigns, options) {
+    if (!this.root) {
+      throw new Error('No document root. Did you parse the document yet?')
+    }
+
+    let context
+    if (assigns instanceof Liquid.Context) {
+      context = assigns
+    } else if (assigns instanceof Object) {
+      assigns = [assigns, this.assigns]
+      context = new Liquid.Context(this.engine, assigns, this.instanceAssigns, this.registers, this.rethrowErrors)
+    } else if (assigns == null) {
+      context = new Liquid.Context(this.engine, this.assigns, this.instanceAssigns, this.registers, this.rethrowErrors)
+    } else {
+      throw new Error('Expected Object or Liquid::Context as parameter, but was ' + (typeof assigns) + '.')
+    }
+
+    if (options && options.registers) {
+      const ref = options.registers
+      for (const key in ref) {
+        if (!Object.prototype.hasOwnProperty.call(ref, key)) continue
+        const value = ref[key]
+        this.registers[key] = value
+      }
+    }
+
+    if (options && options.filters) {
+      context.registerFilters.apply(context, options.filters)
+    }
+
+    const chunks = await this.root.render(context)
+
+    try {
+      const result = await Liquid.Helpers.toFlatString(chunks)
+      this.errors = context.errors
+      return result
+    } catch (err) {
+      this.errors = context.errors
+      throw err
+    }
+  }
+
+  _tokenize (source) {
+    source = String(source)
+    if (source.length === 0) {
+      return []
+    }
+
+    const tokens = source
+      .split(Liquid.TemplateParser)
+      .filter(token => token.length > 0)
+
+    let line = 1
+    let col = 1
+
+    return tokens.map(value => {
+      const result = { value, col, line }
+      const lastIndex = value.lastIndexOf('\n')
+
+      if (lastIndex < 0) {
+        col += value.length
+      } else {
+        const linebreaks = value.split('\n').length - 1
+        line += linebreaks
+        col = value.length - lastIndex
+      }
+
+      return result
+    })
+  }
+}
+
+
+/***/ }),
+
 /***/ 510:
 /***/ (function(module) {
 
@@ -5309,6 +7006,36 @@ exports.HttpClient = HttpClient;
 
 /***/ }),
 
+/***/ 542:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+const Syntax = /(\w+)/
+const SyntaxHelp = "Syntax Error in 'capture' - Valid syntax: capture [var]"
+
+module.exports = class Capture extends Liquid.Block {
+  constructor (template, tagName, markup) {
+    super(template, tagName, markup)
+    const match = Syntax.exec(markup)
+    if (match) {
+      this.to = match[1]
+    } else {
+      throw new Liquid.SyntaxError(SyntaxHelp)
+    }
+  }
+
+  async render (context) {
+    const chunks = await super.render(context)
+    const output = Liquid.Helpers.toFlatString(chunks)
+    context.lastScope()[this.to] = output
+    return ''
+  }
+}
+
+
+/***/ }),
+
 /***/ 549:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -5847,6 +7574,42 @@ module.exports = function settle(resolve, reject, response) {
 
 /***/ }),
 
+/***/ 572:
+/***/ (function(module) {
+
+module.exports = class Tag {
+  constructor (template, tagName, markup) {
+    this.template = template
+    this.tagName = tagName
+    this.markup = markup
+  }
+
+  async parseWithCallbacks (...args) {
+    if (this.beforeParse) {
+      await this.beforeParse.apply(this, args)
+    }
+
+    await this.parse.apply(this, args)
+
+    if (this.afterParse) {
+      await this.afterParse.apply(this, args)
+    }
+  }
+
+  parse () {}
+
+  name () {
+    return this.constructor.name.toLowerCase()
+  }
+
+  render () {
+    return ''
+  }
+}
+
+
+/***/ }),
+
 /***/ 589:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -5922,6 +7685,284 @@ module.exports = require("path");
 /***/ (function(module) {
 
 module.exports = require("net");
+
+/***/ }),
+
+/***/ 635:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class BlankFileSystem {
+  async readTemplateFile () {
+    throw new Liquid.FileSystemError("This file system doesn't allow includes")
+  }
+}
+
+
+/***/ }),
+
+/***/ 638:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const strftime = __webpack_require__(447)
+const Iterable = __webpack_require__(924)
+const flatten = __webpack_require__(252).flatten
+
+const toObjectString = Object.prototype.toString
+const hasOwnProperty = Object.prototype.hasOwnProperty
+
+const isString = input => toObjectString.call(input) === '[object String]'
+const isArray = input => Array.isArray(input)
+const isArguments = input => toObjectString(input) === '[object Arguments]'
+const isNumber = input => !isArray(input) && (input - parseFloat(input)) >= 0
+
+const toString = input => {
+  if (input == null) {
+    return ''
+  } else if (isString(input)) {
+    return input
+  } else if (typeof input.toString === 'function') {
+    return toString(input.toString())
+  } else {
+    return toObjectString.call(input)
+  }
+}
+
+const toIterable = input => Iterable.cast(input)
+
+const toDate = input => {
+  if (input == null) {
+    return
+  }
+  if (input instanceof Date) {
+    return input
+  }
+  if (input === 'now') {
+    return new Date()
+  }
+  if (isNumber(input)) {
+    input = parseInt(input)
+  } else {
+    input = toString(input)
+    if (input.length === 0) {
+      return
+    }
+    input = Date.parse(input)
+  }
+  if (input != null) {
+    return new Date(input)
+  }
+}
+
+const has = (input, key) => (input != null) && hasOwnProperty.call(input, key)
+
+const isEmpty = input => {
+  if (input == null) {
+    return true
+  }
+  if (isArray(input) || isString(input) || isArguments(input)) {
+    return input.length === 0
+  }
+  for (const key in input) {
+    if (has(key, input)) {
+      return false
+    }
+  }
+  return true
+}
+
+const isBlank = input => !(isNumber(input) || input === true) && isEmpty(input)
+
+const HTML_ESCAPE = chr => {
+  switch (chr) {
+    case '&':
+      return '&amp;'
+    case '>':
+      return '&gt;'
+    case '<':
+      return '&lt;'
+    case '"':
+      return '&quot;'
+    case "'":
+      return '&#39;'
+  }
+}
+
+const HTML_ESCAPE_ONCE_REGEXP = /["><']|&(?!([a-zA-Z]+|(#\d+));)/g
+
+const HTML_ESCAPE_REGEXP = /([&><"'])/g
+
+module.exports = {
+  size: function (input) {
+    return input != null && input.length != null ? input.length : 0
+  },
+  downcase: function (input) {
+    return toString(input).toLowerCase()
+  },
+  upcase: function (input) {
+    return toString(input).toUpperCase()
+  },
+  append: function (input, suffix) {
+    return toString(input) + toString(suffix)
+  },
+  prepend: function (input, prefix) {
+    return toString(prefix) + toString(input)
+  },
+  empty: function (input) {
+    return isEmpty(input)
+  },
+  capitalize: function (input) {
+    return toString(input)
+      .replace(/^([a-z])/, (m, chr) => chr.toUpperCase())
+  },
+  sort: async function (input, property) {
+    if (property == null) {
+      return toIterable(input).sort()
+    }
+
+    const array = await toIterable(input).map(item => ({
+      key: item != null ? item[property] : void 0,
+      item
+    }))
+
+    return array.sort((a, b) => {
+      if (a.key > b.key) return 1
+      if (a.key < b.key) return -1
+      return 0
+    }).map(a => a.item)
+  },
+  map: function (input, property) {
+    if (property == null) {
+      return input
+    }
+    return toIterable(input).map(function (e) {
+      return e != null ? e[property] : void 0
+    })
+  },
+  escape: function (input) {
+    return toString(input).replace(HTML_ESCAPE_REGEXP, HTML_ESCAPE)
+  },
+  escape_once: function (input) {
+    return toString(input).replace(HTML_ESCAPE_ONCE_REGEXP, HTML_ESCAPE)
+  },
+  strip_html: function (input) {
+    return toString(input).replace(/<script[\s\S]*?<\/script>/g, '').replace(/<!--[\s\S]*?-->/g, '').replace(/<style[\s\S]*?<\/style>/g, '').replace(/<[^>]*?>/g, '')
+  },
+  strip_newlines: function (input) {
+    return toString(input).replace(/\r?\n/g, '')
+  },
+  newline_to_br: function (input) {
+    return toString(input).replace(/\n/g, '<br />\n')
+  },
+  replace: function (input, string, replacement) {
+    if (replacement == null) {
+      replacement = ''
+    }
+    return toString(input).replace(new RegExp(string, 'g'), replacement)
+  },
+  replace_first: function (input, string, replacement) {
+    if (replacement == null) {
+      replacement = ''
+    }
+    return toString(input).replace(string, replacement)
+  },
+  remove: function (input, string) {
+    return this.replace(input, string)
+  },
+  remove_first: function (input, string) {
+    return this.replace_first(input, string)
+  },
+  truncate: function (input, length = 50, truncateString = '...') {
+    input = toString(input)
+    truncateString = toString(truncateString)
+    length = Number(length)
+    const l = Math.max(0, length - truncateString.length)
+    if (input.length > length) {
+      return input.slice(0, l) + truncateString
+    } else {
+      return input
+    }
+  },
+  truncatewords: function (input, words = 15, truncateString = '...') {
+    input = toString(input)
+    const wordlist = input.split(' ')
+    words = Math.max(1, Number(words))
+    if (wordlist.length > words) {
+      return wordlist.slice(0, words).join(' ') + truncateString
+    } else {
+      return input
+    }
+  },
+  split: function (input, pattern) {
+    input = toString(input)
+    if (!input) {
+      return
+    }
+    return input.split(pattern)
+  },
+  flatten: function (input) {
+    const array = toIterable(input).toArray()
+    return flatten(array)
+  },
+  join: function (input, glue = ' ') {
+    const array = this.flatten(input)
+    return array.join(glue)
+  },
+  first: function (input) {
+    return toIterable(input).first()
+  },
+  last: function (input) {
+    return toIterable(input).last()
+  },
+  plus: function (input, operand) {
+    return Number(input) + Number(operand)
+  },
+  minus: function (input, operand) {
+    return Number(input) - Number(operand)
+  },
+  times: function (input, operand) {
+    return Number(input) * Number(operand)
+  },
+  dividedBy: function (input, operand) {
+    return Number(input) / Number(operand)
+  },
+  divided_by: function (input, operand) {
+    return this.dividedBy(input, operand)
+  },
+  round: function (input, operand) {
+    return Number(input).toFixed(operand)
+  },
+  modulo: function (input, operand) {
+    return Number(input) % Number(operand)
+  },
+  date: function (input, format) {
+    input = toDate(input)
+    if (input == null) {
+      return ''
+    } else if (toString(format).length === 0) {
+      return input.toUTCString()
+    } else {
+      return strftime(format, input)
+    }
+  },
+  default: function (input, defaultValue) {
+    if (arguments.length < 2) {
+      defaultValue = ''
+    }
+
+    const blank = input && typeof input.isBlank === 'function'
+      ? input.isBlank()
+      : isBlank(input)
+
+    if (blank) {
+      return defaultValue
+    } else {
+      return input
+    }
+  }
+}
+
 
 /***/ }),
 
@@ -6227,6 +8268,20 @@ module.exports = function httpAdapter(config) {
 
 /***/ }),
 
+/***/ 678:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class ElseCondition extends Liquid.Condition {
+  evaluate () {
+    return true
+  }
+}
+
+
+/***/ }),
+
 /***/ 688:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -6363,10 +8418,136 @@ module.exports = function isCancel(value) {
 
 /***/ }),
 
+/***/ 743:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+const SyntaxHelp = "Syntax Error in 'assign' - Valid syntax: assign [var] = [source]"
+const Syntax = RegExp('((?:' + Liquid.VariableSignature.source + ')+)\\s*=\\s*(.*)\\s*')
+
+module.exports = class Assign extends Liquid.Tag {
+  constructor (template, tagName, markup) {
+    super(template, tagName, markup)
+    const match = Syntax.exec(markup)
+    if (match) {
+      this.to = match[1]
+      this.from = new Liquid.Variable(match[2])
+    } else {
+      throw new Liquid.SyntaxError(SyntaxHelp)
+    }
+  }
+
+  async render (context) {
+    context.lastScope()[this.to] = this.from.render(context)
+    return super.render.call(this, context)
+  }
+}
+
+
+/***/ }),
+
 /***/ 747:
 /***/ (function(module) {
 
 module.exports = require("fs");
+
+/***/ }),
+
+/***/ 748:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+const PromiseReduce = __webpack_require__(73)
+
+const SyntaxHelp = "Syntax Error in tag 'if' - Valid syntax: if [expression]"
+const Syntax = RegExp('(' + Liquid.QuotedFragment.source + ')\\s*([=!<>a-z_]+)?\\s*(' + Liquid.QuotedFragment.source + ')?')
+const ExpressionsAndOperators = RegExp('(?:\\b(?:\\s?and\\s?|\\s?or\\s?)\\b|(?:\\s*(?!\\b(?:\\s?and\\s?|\\s?or\\s?)\\b)(?:' + Liquid.QuotedFragment.source + '|\\S+)\\s*)+)')
+
+module.exports = class If extends Liquid.Block {
+  constructor (template, tagName, markup) {
+    super(template, tagName, markup)
+    this.blocks = []
+    this.pushBlock('if', markup)
+  }
+
+  unknownTag (tag, markup) {
+    if (tag === 'elsif' || tag === 'else') {
+      return this.pushBlock(tag, markup)
+    } else {
+      return super.unknownTag(tag, markup)
+    }
+  }
+
+  defineBlock (tag, markup) {
+    if (tag === 'else') {
+      return new Liquid.ElseCondition()
+    }
+
+    const expressions = Liquid.Helpers
+      .scan(markup, ExpressionsAndOperators)
+      .reverse()
+
+    const match = Syntax.exec(expressions.shift())
+    if (!match) {
+      throw new Liquid.SyntaxError(SyntaxHelp)
+    }
+
+    let condition = new Liquid.Condition(...match.slice(1, 4))
+
+    while (expressions.length > 0) {
+      const operator = String(expressions.shift()).trim()
+      const newMatch = Syntax.exec(expressions.shift())
+      if (!newMatch) {
+        throw new SyntaxError(SyntaxHelp)
+      }
+
+      const newCondition = new Liquid.Condition(...newMatch.slice(1, 4))
+      newCondition[operator].call(newCondition, condition) // eslint-disable-line
+      condition = newCondition
+    }
+
+    return condition
+  }
+
+  pushBlock (tag, markup) {
+    const block = this.defineBlock(tag, markup)
+    this.blocks.push(block)
+    this.nodelist = block.attach([])
+  }
+
+  async render (context) {
+    const block = await PromiseReduce(this.blocks, async (chosenBlock, block) => {
+      if (chosenBlock != null) return chosenBlock
+      let ok = await block.evaluate(context)
+      if (block.negate) ok = !ok
+      if (ok) return block
+    }, null)
+
+    return context.stack(async () => {
+      if (block != null) {
+        return this.renderAll(block.attachment, context)
+      } else {
+        return ''
+      }
+    })
+  }
+}
+
+
+/***/ }),
+
+/***/ 750:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Raw = __webpack_require__(15)
+
+module.exports = class Comment extends Raw {
+  render () {
+    return ''
+  }
+}
+
 
 /***/ }),
 
@@ -6664,6 +8845,49 @@ function getUserAgent() {
 
 exports.getUserAgent = getUserAgent;
 //# sourceMappingURL=index.js.map
+
+
+/***/ }),
+
+/***/ 804:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+const fs = __webpack_require__(747)
+const path = __webpack_require__(622)
+const { promisify } = __webpack_require__(669)
+const readFile = promisify(fs.readFile)
+
+const PathPattern = /^[^./][a-zA-Z0-9-_/]+$/
+
+module.exports = class LocalFileSystem extends Liquid.BlankFileSystem {
+  constructor (root, extension) {
+    super()
+    if (extension == null) {
+      extension = 'html'
+    }
+    this.root = root
+    this.fileExtension = extension
+  }
+
+  async readTemplateFile (templatePath) {
+    const fullPath = await this.fullPath(templatePath)
+    try {
+      const contents = await readFile(fullPath, 'utf8')
+      return contents
+    } catch (err) {
+      throw new Liquid.FileSystemError('Error loading template: ' + err.message)
+    }
+  }
+
+  async fullPath (templatePath) {
+    if (PathPattern.test(templatePath)) {
+      return path.resolve(path.join(this.root, templatePath + ('.' + this.fileExtension)))
+    } else {
+      throw new Liquid.ArgumentError(`Illegal template name '${templatePath}'`)
+    }
+  }
+}
 
 
 /***/ }),
@@ -8009,6 +10233,129 @@ exports.restEndpointMethods = restEndpointMethods;
 
 /***/ }),
 
+/***/ 847:
+/***/ (function(module) {
+
+module.exports = class Range {
+  constructor (start, end, step) {
+    this.start = start
+    this.end = end
+    this.step = step != null ? step : 0
+    if (this.step === 0) {
+      if (this.end < this.start) {
+        this.step = -1
+      } else {
+        this.step = 1
+      }
+    }
+    Object.seal(this)
+  }
+
+  get length () {
+    return Math.floor((this.end - this.start) / this.step)
+  }
+
+  some (f) {
+    let current = this.start
+    const end = this.end
+    const step = this.step
+    if (step > 0) {
+      while (current < end) {
+        if (f(current)) {
+          return true
+        }
+        current += step
+      }
+    } else {
+      while (current > end) {
+        if (f(current)) {
+          return true
+        }
+        current += step
+      }
+    }
+    return false
+  }
+
+  forEach (f) {
+    return this.some(function (e) {
+      f(e)
+      return false
+    })
+  }
+
+  toArray () {
+    const array = []
+    this.forEach((e) => {
+      return array.push(e)
+    })
+    return array
+  }
+}
+
+
+/***/ }),
+
+/***/ 849:
+/***/ (function(module) {
+
+module.exports = class Drop {
+  constructor () {
+    this.context = null
+  }
+
+  static isInvokable (method) {
+    if (!this.invokableMethods) {
+      const denylist = Object.keys(Drop.prototype)
+      const allowlist = ['toLiquid']
+
+      Object.keys(this.prototype).forEach((k) => {
+        if (!(denylist.indexOf(k) >= 0)) {
+          return allowlist.push(k)
+        }
+      })
+
+      this.invokableMethods = allowlist
+    }
+
+    return this.invokableMethods.indexOf(method) >= 0
+  }
+
+  hasKey () {
+    return true
+  }
+
+  invokeDrop (methodOrKey) {
+    if (this.constructor.isInvokable(methodOrKey)) {
+      const value = this[methodOrKey]
+      if (typeof value === 'function') {
+        return value.call(this)
+      } else {
+        return value
+      }
+    } else {
+      return this.beforeMethod(methodOrKey)
+    }
+  }
+
+  beforeMethod () {}
+
+  get (methodOrKey) {
+    return this.invokeDrop(methodOrKey)
+  }
+
+  toLiquid () {
+    return this
+  }
+
+  toString () {
+    return '[Liquid.Drop ' + this.constructor.name + ']'
+  }
+}
+
+
+/***/ }),
+
 /***/ 864:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -8066,6 +10413,21 @@ module.exports = (
       };
     })()
 );
+
+
+/***/ }),
+
+/***/ 865:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class Unless extends Liquid.If {
+  async parse (tokens) {
+    await super.parse(tokens)
+    this.blocks[0].negate = true
+  }
+}
 
 
 /***/ }),
@@ -8147,6 +10509,78 @@ module.exports = function combineURLs(baseURL, relativeURL) {
     ? baseURL.replace(/\/+$/, '') + '/' + relativeURL.replace(/^\/+/, '')
     : baseURL;
 };
+
+
+/***/ }),
+
+/***/ 890:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+const PromiseReduce = __webpack_require__(73)
+
+const SyntaxHelp = "Syntax Error in tag 'case' - Valid syntax: case [expression]"
+const Syntax = RegExp('(' + Liquid.QuotedFragment.source + ')')
+const WhenSyntax = RegExp('(' + Liquid.QuotedFragment.source + ')(?:(?:\\s+or\\s+|\\s*\\,\\s*)(' + Liquid.QuotedFragment.source + '))?')
+
+module.exports = class Case extends Liquid.Block {
+  constructor (template, tagName, markup) {
+    super(template, tagName, markup)
+    const match = Syntax.exec(markup)
+    if (!match) {
+      throw new Liquid.SyntaxError(SyntaxHelp)
+    }
+    this.blocks = []
+  }
+
+  unknownTag (tag, markup) {
+    if (tag === 'when' || tag === 'else') {
+      return this.pushBlock(tag, markup)
+    } else {
+      return super.unknownTag(tag, markup)
+    }
+  }
+
+  pushBlock (tag, markup) {
+    if (tag === 'else') {
+      const block = new Liquid.ElseCondition()
+      this.blocks.push(block)
+      this.nodelist = block.attach([])
+      return this.nodelist
+    }
+
+    const expressions = Liquid.Helpers.scan(markup, WhenSyntax)
+    const nodelist = []
+    const ref = expressions[0]
+    const results = []
+
+    for (const value of ref) {
+      if (value) {
+        const block = new Liquid.Condition(this.markup, '==', value)
+        this.blocks.push(block)
+        results.push(this.nodelist = block.attach(nodelist))
+      } else {
+        results.push(void 0)
+      }
+    }
+
+    return results
+  }
+
+  async render (context) {
+    const block = await PromiseReduce(this.blocks, async (chosenBlock, block) => {
+      if (chosenBlock != null) return chosenBlock
+      const ok = await block.evaluate(context)
+      if (ok) return block
+    }, null)
+
+    return context.stack(() => {
+      return block != null
+        ? this.renderAll(block.attachment, context)
+        : ''
+    })
+  }
+}
 
 
 /***/ }),
@@ -8275,6 +10709,136 @@ catch (error) {
   debug = function () { /* */ };
 }
 module.exports = debug;
+
+
+/***/ }),
+
+/***/ 906:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+const util = __webpack_require__(669)
+
+function createCustomError (name, inherit = global.Error) {
+  const error = function (message) {
+    this.name = name
+    this.message = message
+    if (global.Error.captureStackTrace) {
+      return global.Error.captureStackTrace(this, arguments.callee)  // eslint-disable-line
+    }
+  }
+  util.inherits(error, inherit)
+  return error
+}
+Liquid.Error = createCustomError('Error');
+
+['ArgumentError', 'ContextError', 'FilterNotFound', 'FileSystemError', 'StandardError', 'StackLevelError', 'SyntaxError'].forEach(className => {
+  Liquid[className] = createCustomError('Liquid.' + className, Liquid.Error)
+  return Liquid[className]
+})
+
+Liquid.Engine = __webpack_require__(255)
+Liquid.Helpers = __webpack_require__(252)
+Liquid.Range = __webpack_require__(847)
+Liquid.Iterable = __webpack_require__(924)
+Liquid.Drop = __webpack_require__(849)
+Liquid.Context = __webpack_require__(449)
+Liquid.Tag = __webpack_require__(572)
+Liquid.Block = __webpack_require__(34)
+Liquid.Document = __webpack_require__(322)
+Liquid.Variable = __webpack_require__(996)
+Liquid.Template = __webpack_require__(478)
+Liquid.StandardFilters = __webpack_require__(638)
+Liquid.Condition = __webpack_require__(370)
+Liquid.ElseCondition = __webpack_require__(678)
+Liquid.BlankFileSystem = __webpack_require__(635)
+Liquid.LocalFileSystem = __webpack_require__(804)
+Liquid.Assign = __webpack_require__(743)
+Liquid.Capture = __webpack_require__(542)
+Liquid.Case = __webpack_require__(890)
+Liquid.Comment = __webpack_require__(750)
+Liquid.Decrement = __webpack_require__(409)
+Liquid.For = __webpack_require__(172)
+Liquid.If = __webpack_require__(748)
+Liquid.Ifchanged = __webpack_require__(993)
+Liquid.Increment = __webpack_require__(376)
+Liquid.Raw = __webpack_require__(15)
+Liquid.Unless = __webpack_require__(865)
+Liquid.Include = __webpack_require__(290)
+
+module.exports = Liquid
+
+
+/***/ }),
+
+/***/ 924:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Range = __webpack_require__(847)
+
+const isString = input => {
+  return Object.prototype.toString.call(input) === '[object String]'
+}
+
+class Iterable {
+  static cast (v) {
+    if (v instanceof Iterable) {
+      return v
+    } else if (v instanceof Range) {
+      return new IterableForArray(v.toArray())
+    } else if (Array.isArray(v) || isString(v)) {
+      return new IterableForArray(v)
+    } else if (v != null) {
+      return new IterableForArray([v])
+    } else {
+      return new IterableForArray([])
+    }
+  }
+
+  first () {
+    const array = this.toArray()
+    return array[0]
+  }
+
+  async map (mapper) {
+    const array = this.toArray()
+    return Promise.all(array.map(mapper))
+  }
+
+  sort (sorter) {
+    const array = this.toArray()
+    return array.sort(sorter)
+  }
+
+  toArray () {
+    return this.slice(0)
+  }
+
+  slice () {
+    throw new Error(this.constructor.name + '.slice() not implemented')
+  }
+
+  last () {
+    throw new Error(this.constructor.name + '.last() not implemented')
+  }
+}
+
+class IterableForArray extends Iterable {
+  constructor (array) {
+    super()
+    this.array = array
+  }
+
+  slice () {
+    return this.array.slice.apply(this.array, arguments)
+  }
+
+  last () {
+    return this.array[this.array.length - 1]
+  }
+}
+
+module.exports = Iterable
 
 
 /***/ }),
@@ -8464,6 +11028,153 @@ module.exports = function buildFullPath(baseURL, requestedURL) {
   }
   return requestedURL;
 };
+
+
+/***/ }),
+
+/***/ 982:
+/***/ (function(module) {
+
+class Liquid {}
+
+Liquid.FilterSeparator = /\|/
+Liquid.ArgumentSeparator = /,/
+Liquid.FilterArgumentSeparator = /:/
+Liquid.VariableAttributeSeparator = /\./
+Liquid.TagStart = /\{%/
+Liquid.TagEnd = /%\}/
+Liquid.VariableSignature = /\(?[\w\-.[\]]\)?/
+Liquid.VariableSegment = /[\w-]/
+Liquid.VariableStart = /\{\{/
+Liquid.VariableEnd = /\}\}/
+Liquid.VariableIncompleteEnd = /\}\}?/
+Liquid.QuotedString = /"[^"]*"|'[^']*'/
+Liquid.QuotedFragment = RegExp(Liquid.QuotedString.source + "|(?:[^\\s,\\|'\"]|" + Liquid.QuotedString.source + ')+')
+Liquid.StrictQuotedFragment = /"[^"]+"|'[^']+'|[^\s|:,]+/
+Liquid.FirstFilterArgument = RegExp(Liquid.FilterArgumentSeparator.source + '(?:' + Liquid.StrictQuotedFragment.source + ')')
+Liquid.OtherFilterArgument = RegExp(Liquid.ArgumentSeparator.source + '(?:' + Liquid.StrictQuotedFragment.source + ')')
+Liquid.SpacelessFilter = RegExp("^(?:'[^']+'|\"[^\"]+\"|[^'\"])*" + Liquid.FilterSeparator.source + '(?:' + Liquid.StrictQuotedFragment.source + ')(?:' + Liquid.FirstFilterArgument.source + '(?:' + Liquid.OtherFilterArgument.source + ')*)?')
+Liquid.Expression = RegExp('(?:' + Liquid.QuotedFragment.source + '(?:' + Liquid.SpacelessFilter.source + ')*)')
+Liquid.TagAttributes = RegExp('(\\w+)\\s*\\:\\s*(' + Liquid.QuotedFragment.source + ')')
+Liquid.AnyStartingTag = /\{\{|\{%/
+Liquid.PartialTemplateParser = RegExp(Liquid.TagStart.source + '.*?' + Liquid.TagEnd.source + '|' + Liquid.VariableStart.source + '.*?' + Liquid.VariableIncompleteEnd.source)
+Liquid.TemplateParser = RegExp('(' + Liquid.PartialTemplateParser.source + '|' + Liquid.AnyStartingTag.source + ')')
+Liquid.VariableParser = RegExp('\\[[^\\]]+\\]|' + Liquid.VariableSegment.source + '+\\??')
+
+module.exports = Liquid
+
+
+/***/ }),
+
+/***/ 993:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+
+module.exports = class IfChanged extends Liquid.Block {
+  async render (context) {
+    return context.stack(async () => {
+      const rendered = await this.renderAll(this.nodelist, context)
+      const output = Liquid.Helpers.toFlatString(rendered)
+      if (output !== context.registers.ifchanged) {
+        context.registers.ifchanged = output
+        return context.registers.ifchanged
+      } else {
+        return ''
+      }
+    })
+  }
+}
+
+
+/***/ }),
+
+/***/ 996:
+/***/ (function(module, __unusedexports, __webpack_require__) {
+
+const Liquid = __webpack_require__(982)
+const PromiseReduce = __webpack_require__(73)
+
+const VariableNameFragment = RegExp('\\s*(' + Liquid.QuotedFragment.source + ')(.*)')
+const FilterListFragment = RegExp(Liquid.FilterSeparator.source + '\\s*(.*)')
+const FilterArgParser = RegExp('(?:' + Liquid.FilterArgumentSeparator.source + '|' + Liquid.ArgumentSeparator.source + ')\\s*(' + Liquid.QuotedFragment.source + ')')
+const FilterParser = RegExp('(?:' + Liquid.FilterSeparator.source + '|(?:\\s*(?!(?:' + Liquid.FilterSeparator.source + '))(?:' + Liquid.QuotedFragment.source + '|\\S+)\\s*)+)')
+
+class Variable {
+  constructor (markup) {
+    this.markup = markup
+    this.name = null
+    this.filters = []
+
+    const match = VariableNameFragment.exec(this.markup)
+    if (!match) return
+
+    this.name = match[1]
+
+    const secondMatch = FilterListFragment.exec(match[2])
+    if (!secondMatch) return
+
+    const filters = Liquid.Helpers.scan(secondMatch[1], Liquid.Variable.FilterParser)
+
+    filters.forEach(filter => {
+      const filterMatch = /\s*(\w+)/.exec(filter)
+      if (!filterMatch) return
+      const filterName = filterMatch[1]
+      const filterArgs = Liquid.Helpers.scan(filter, FilterArgParser)
+      const flattenedArgs = Liquid.Helpers.flatten(filterArgs)
+      return this.filters.push([filterName, flattenedArgs])
+    })
+  }
+
+  async render (context) {
+    if (this.name == null) {
+      return ''
+    }
+
+    const reducer = async (input, filter) => {
+      const filterArgs = filter[1].map(a => context.get(a))
+      const results = await Promise.all([input].concat(...filterArgs))
+      input = results.shift()
+      try {
+        return context
+          .invoke
+          .apply(context, [filter[0], input].concat(...results))
+      } catch (error) {
+        if (!(error instanceof Liquid.FilterNotFound)) {
+          throw error
+        }
+        throw new Liquid.FilterNotFound(`Error - filter '${filter[0]}' in '${this.markup}' could not be found.`)
+      }
+    }
+
+    const value = await context.get(this.name)
+
+    let filtered
+    switch (this.filters.length) {
+      case 0:
+        filtered = value
+        break
+      case 1:
+        filtered = reducer(value, this.filters[0])
+        break
+      default:
+        filtered = PromiseReduce(this.filters, reducer, value)
+    }
+
+    try {
+      const f = await filtered
+      if (!(f instanceof Liquid.Drop)) return f
+      f.context = context
+      return f.toString()
+    } catch (err) {
+      return context.handleError(err)
+    }
+  }
+}
+
+Variable.FilterParser = FilterParser
+
+module.exports = Variable
 
 
 /***/ })

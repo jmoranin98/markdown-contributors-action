@@ -1,17 +1,20 @@
 const core = require('@actions/core');
 const gh = require('@actions/github');
 const axios = require('axios');
+const Liquid = require('liquid')
+const engine = new Liquid.Engine();
 
 const fs = require('fs');
 
 (async () => {
   try {
     const doc = fs.readFileSync(core.getInput('path'));
+    const templateDoc = fs.readFileSync(core.getInput('template_path'));
     const outputPath = core.getInput('output_path');
 
     const { contributors } = JSON.parse(doc);
 
-    let contributorsStr = '';
+    const finalContributors = [];
 
     if (
       contributors &&
@@ -19,7 +22,7 @@ const fs = require('fs');
     ) {
       for (let contributor of contributors) {
         let imageUrl = '';
-        let contributorName = '';
+        let name = '';
 
         if (typeof contributor === 'object') {
           if (contributor.avatar_url) imageUrl = contributor.avatar_url;
@@ -29,20 +32,24 @@ const fs = require('fs');
             imageUrl = avatar_url;
           }
 
-          contributorName = contributor.login;
+          name = contributor.login;
         } else if (typeof contributor === 'string') {
           const { data } = await axios(`https://api.github.com/users/${contributor}`);
           const { avatar_url } = data;
 
           imageUrl = avatar_url;
-          contributorName = contributor;
+          name = contributor;
         } else core.setFailed('Not supported format');
 
-        contributorsStr += `- <img src="${imageUrl}" height='50' width='50' /> ${contributorName}\n`;
+        finalContributors.push({
+          imageUrl,
+          name,
+        });
       }
     }
 
-    const markdownContent = `# Contributors\n${contributorsStr}`;
+    const liquidTemplate = await engine.parse(templateDoc);
+    const markdownContent = await liquidTemplate.render({ contributors: finalContributors });
 
     fs.writeFileSync(outputPath, markdownContent);
   } catch (error) {

@@ -12,7 +12,8 @@
   "dependencies": {
     "@actions/core": "^1.2.5",
     "@actions/github": "^4.0.0",
-    "axios": "^0.20.0"
+    "axios": "^0.20.0",
+    "liquid": "^5.0.0"
   },
   "devDependencies": {
     "@zeit/ncc": "^0.22.3"
