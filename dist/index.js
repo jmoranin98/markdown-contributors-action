@@ -565,6 +565,7 @@ const fs = __webpack_require__(747);
   try {
     const doc = fs.readFileSync(core.getInput('path'));
     const outputPath = fs.readFileSync(core.getInput('output_path'));
+
     console.log(doc, outputPath);
 
     const { contributors } = JSON.parse(doc);
