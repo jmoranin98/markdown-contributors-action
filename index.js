@@ -9,7 +9,7 @@ const fs = require('fs');
 (async () => {
   try {
     const doc = fs.readFileSync(core.getInput('path'));
-    const templateDoc = fs.readFileSync(core.getInput('template_path'));
+    const templateDoc = fs.readFileSync(core.getInput('template_path'), 'utf-8');
     const outputPath = core.getInput('output_path');
 
     console.log(templateDoc);
