@@ -38,14 +38,11 @@ const fs = require('fs');
           contributorName = contributor;
         } else core.setFailed('Not supported format');
 
-        contributorsStr += `- ![alt text](${imageUrl}) ${contributorName}\n`;
+        contributorsStr += `- <img src="${imageUrl}" height='50' width='50' /> ${contributorName}\n`;
       }
     }
 
-    const markdownContent = `
-      # Contributors
-      ${contributorsStr}
-    `;
+    const markdownContent = `# Contributors\n${contributorsStr}`;
 
     fs.writeFileSync(outputPath, markdownContent);
   } catch (error) {
