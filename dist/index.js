@@ -747,6 +747,8 @@ const fs = __webpack_require__(747);
     const templateDoc = fs.readFileSync(core.getInput('template_path'));
     const outputPath = core.getInput('output_path');
 
+    console.log(templateDoc);
+
     const { contributors } = JSON.parse(doc);
 
     const finalContributors = [];
