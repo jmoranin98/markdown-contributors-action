@@ -8,6 +8,7 @@ const fs = require('fs');
   try {
     const doc = fs.readFileSync(core.getInput('path'));
     const outputPath = fs.readFileSync(core.getInput('output_path'));
+    console.log(doc, outputPath);
 
     const { contributors } = JSON.parse(doc);
 
