@@ -5,6 +5,10 @@ inputs:
     description: 'Path of contributors file'
     required: true
     default: 'contributors.json'
+  output_path:
+    description: 'Path of contributors generated file'
+    required: true
+    default: 'contributors.md'
 runs:
   using: 'node12'
   main: './dist/index.js'

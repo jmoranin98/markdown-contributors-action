@@ -1,14 +1,14 @@
 const core = require('@actions/core');
 const gh = require('@actions/github');
+const axios = require('axios');
 
 const fs = require('fs');
 
 (async () => {
   try {
-    const payload = JSON.stringify(gh.context.payload, undefined, 2);
-    console.log(`Event payload: ${payload}`);
-
     const doc = fs.readFileSync(core.getInput('path'));
+    const outputPath = fs.readFileSync(core.getInput('output_path'));
+
     const { contributors } = JSON.parse(doc);
 
     let contributorsStr = '';
@@ -17,9 +17,29 @@ const fs = require('fs');
       contributors &&
       Array.isArray(contributors)
     ) {
-      contributors.forEach(contributor => {
-        contributorsStr += `- ![alt text](https://ui-avatars.com/api/?size=56&name=${contributor.replace(' ', '+')}) ${contributor}\n`;
-      });
+      for (let contributor of contributors) {
+        let imageUrl = '';
+        let contributorName = '';
+
+        if (typeof contributor === 'object') {
+          if (contributor.avatar_url) imageUrl = contributor.avatar_url;
+          else {
+            const { data } = await axios(`https://api.github.com/users/${contributor.login}`);
+            const { avatar_url } = data;
+            imageUrl = avatar_url;
+          }
+
+          contributorName = contributor.login;
+        } else if (typeof contributor === 'string') {
+          const { data } = await axios(`https://api.github.com/users/${contributor}`);
+          const { avatar_url } = data;
+
+          imageUrl = avatar_url;
+          contributorName = contributor;
+        } else core.setFailed('Not supported format');
+
+        contributorsStr += `- ![alt text](${imageUrl}) ${contributorName}\n`;
+      }
     }
 
     const markdownContent = `
@@ -27,7 +47,7 @@ const fs = require('fs');
       ${contributorsStr}
     `;
 
-    fs.writeFileSync('contributors.md', markdownContent);
+    fs.writeFileSync(outputPath, markdownContent);
   } catch (error) {
     core.setFailed(error.message);
   }
