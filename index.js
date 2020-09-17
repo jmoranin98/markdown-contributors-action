@@ -12,8 +12,6 @@ const fs = require('fs');
     const templateDoc = fs.readFileSync(core.getInput('template_path'), 'utf-8');
     const outputPath = core.getInput('output_path');
 
-    console.log(templateDoc);
-
     const { contributors } = JSON.parse(doc);
 
     const finalContributors = [];
